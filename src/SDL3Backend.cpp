@@ -38,7 +38,7 @@ namespace XidiSDL3Plugin
             gamepads[i] = gp;
         }
 
-        return true;
+        return false;
     }
 
     TPhysicalControllerIndex SDL3Backend::MaxPhysicalControllerCount()
