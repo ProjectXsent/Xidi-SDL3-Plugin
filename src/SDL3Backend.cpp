@@ -86,8 +86,13 @@ namespace XidiSDL3Plugin
         if (gp == nullptr)
             return {.deviceStatus = Controller::EPhysicalDeviceStatus::Error};
 
-        if (!SDL_HasGamepad() && !SDL_GamepadConnected(gp))
+        if (!SDL_GamepadConnected(gp))
+        {
+            SDL_CloseGamepad(gp);
+            gamepads[physicalControllerIndex] = nullptr;
+
             return {.deviceStatus = Controller::EPhysicalDeviceStatus::NotConnected};
+        }
 
         SPhysicalControllerState state = {
             .deviceStatus = Controller::EPhysicalDeviceStatus::Ok,
