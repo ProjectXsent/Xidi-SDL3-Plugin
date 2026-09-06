@@ -30,7 +30,6 @@ A full list of supported controllers can be found in the [SDL3 source code](http
 
 ## Usage
 To use the plugin, [set up Xidi as per normal](https://github.com/samuelgr/Xidi/wiki/Getting-Started), download the [latest release of the SDL3 Plugin](https://github.com/RibShark/Xidi-SDL3-Plugin/releases/latest), and place either the "SDL.XidiPlugin.32.dll" file (for a 32-bit application), or the "SDL.XidiPlugin.64.dll" (for a 64-bit application) into the same directory as the application executable.
-Within the repository folder, navigate to `SDL3\lib\x86` (32-bit) or `SDL3\lib\x64` (64-bit) and copy the corresponding `SDL3.dll` beside the "SDL.XidiPlugin.32.dll" file (for a 32-bit application), or the "SDL.XidiPlugin.64.dll" (for a 64-bit application) into the same directory as the application executable.
 
 Xidi must then be configured to use the plugin instead of its own implementation, to do this, create a [configuration file](https://github.com/samuelgr/Xidi/wiki/Configuration) in the same directory as the application named "Xidi.ini" and add the following text to the top of the file:
 ````
