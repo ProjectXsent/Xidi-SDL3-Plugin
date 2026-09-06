@@ -18,8 +18,19 @@ This is a plugin for [Xidi](https://github.com/samuelgr/Xidi) (versions 5.0.0 an
 
 A full list of supported controllers can be found in the [SDL3 source code](https://github.com/libsdl-org/SDL/blob/main/src/joystick/SDL_gamepad_db.h).
 
+## Building from source
+**Requirements:**
+- [CMake](https://cmake.org)
+- [Microsoft Visual Studio](https://visualstudio.microsoft.com) (2022 and above or use Visual Studio Build Tools)
+- SDL3-devel-3.x.xx-VC (current repo is using v3.4.10)
+    - In case you want to update, download the latest `SDL3-devel-3.x.xx-VC.zip`, extract the folder to Xidi SDL3 Plugin repo and rename it to `SDL3`. This is for the `-DSDL3_DIR=".\SDL3\cmake"` in the .bat file.
+
+**On Windows (primary path):**
+- Run `build_x86_Release.bat` or `build_x64_Release.bat`.
+
 ## Usage
 To use the plugin, [set up Xidi as per normal](https://github.com/samuelgr/Xidi/wiki/Getting-Started), download the [latest release of the SDL3 Plugin](https://github.com/RibShark/Xidi-SDL3-Plugin/releases/latest), and place either the "SDL.XidiPlugin.32.dll" file (for a 32-bit application), or the "SDL.XidiPlugin.64.dll" (for a 64-bit application) into the same directory as the application executable.
+Within the repository folder, navigate to `SDL3\lib\x86` (32-bit) or `SDL3\lib\x64` (64-bit) and copy the corresponding `SDL3.dll` beside the "SDL.XidiPlugin.32.dll" file (for a 32-bit application), or the "SDL.XidiPlugin.64.dll" (for a 64-bit application) into the same directory as the application executable.
 
 Xidi must then be configured to use the plugin instead of its own implementation, to do this, create a [configuration file](https://github.com/samuelgr/Xidi/wiki/Configuration) in the same directory as the application named "Xidi.ini" and add the following text to the top of the file:
 ````
