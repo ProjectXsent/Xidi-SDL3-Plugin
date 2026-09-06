@@ -10,6 +10,7 @@ This is a plugin for [Xidi](https://github.com/samuelgr/Xidi) (versions 5.0.0 an
 * Nintendo Switch 2 Joy-Con
 * Nintendo Switch 2 Pro Controller
 * Steam Controller
+* Steam Controller 2
 * Google Stadia Controller
 * Amazon Luna Controller
 * Various 8BitDo Gamepads
