@@ -30,7 +30,7 @@ A full list of supported controllers can be found in the [SDL3 source code](http
 - Run `build_x86_Release.bat` or `build_x64_Release.bat`.
 
 ## Usage
-To use the plugin, [set up Xidi as per normal](https://github.com/samuelgr/Xidi/wiki/Getting-Started), download the [latest release of the SDL3 Plugin](https://github.com/ProjectXsent/Xidi-SDL3-Plugin/releases/latest), and place either the "SDL.XidiPlugin.32.dll" file (for a 32-bit application), or the "SDL.XidiPlugin.64.dll" (for a 64-bit application) and "SDL3.dll" into the same directory as the application executable.
+To use the plugin, [set up Xidi as per normal](https://github.com/samuelgr/Xidi/wiki/Getting-Started), download the [latest release of the SDL3 Plugin](https://github.com/ProjectXsent/Xidi-SDL3-Plugin/releases/latest) and the [latest SDL3.dll release](https://github.com/libsdl-org/SDL/releases), and place either the "SDL.XidiPlugin.32.dll" file (for a 32-bit application), or the "SDL.XidiPlugin.64.dll" (for a 64-bit application) and the corresponding "SDL3.dll" (either x86 or x 64) into the same directory as the application executable.
 
 Xidi must then be configured to use the plugin instead of its own implementation, to do this, create a [configuration file](https://github.com/samuelgr/Xidi/wiki/Configuration) in the same directory as the application named "Xidi.ini" and add the following text to the top of the file:
 ````
