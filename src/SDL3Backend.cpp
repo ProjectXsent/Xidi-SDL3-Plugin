@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <Windows.h>
 #include <hidsdi.h>
+#include <cstring>
 
 #include "SDL3Backend.h"
 
@@ -9,9 +10,108 @@ namespace XidiSDL3Plugin
 {
     using namespace Xidi;
 
-    SDL_JoystickID* gamepadIDs = nullptr;
-    std::vector<SDL_Gamepad*> gamepads = {};
-    int gamepadCount = 0;
+    static constexpr int kMaxPhysicalControllers = 4;
+
+    static std::vector<SDL_Gamepad*> gamepads(kMaxPhysicalControllers, nullptr);
+    static int gamepadCount = kMaxPhysicalControllers;
+
+    /// Finds the first physical controller slot that does not currently have a gamepad
+    /// assigned to it. Returns -1 if every slot is occupied.
+    static int FindFreeGamepadSlot()
+    {
+        for (int i = 0; i < gamepadCount; i++)
+        {
+            if (gamepads[i] == nullptr)
+                return i;
+        }
+
+        return -1;
+    }
+
+    /// Finds the physical controller slot currently holding the gamepad with the given SDL
+    /// joystick instance ID. Returns -1 if no slot holds that instance.
+    static int FindGamepadSlotByInstanceId(SDL_JoystickID instanceId)
+    {
+        for (int i = 0; i < gamepadCount; i++)
+        {
+            if ((gamepads[i] != nullptr) && (SDL_GetGamepadID(gamepads[i]) == instanceId))
+                return i;
+        }
+
+        return -1;
+    }
+
+    /// Opens a gamepad (identified by SDL joystick instance ID) and places it into a free
+    /// physical controller slot, if one is available. Used both for the initial scan at
+    /// startup and for SDL_EVENT_GAMEPAD_ADDED hotplug events.
+    static void OpenGamepadForHotplug(SDL_JoystickID instanceId)
+    {
+        // Guard against duplicate/late add events for a device we already have open.
+        if (FindGamepadSlotByInstanceId(instanceId) != -1)
+            return;
+
+        const int slot = FindFreeGamepadSlot();
+        if (slot == -1)
+            return; // all physical controller slots are in use; ignore this device (log when ability added)
+
+        SDL_Gamepad* gp = SDL_OpenGamepad(instanceId);
+        if (gp == nullptr)
+            return; // failed to open the device (log when ability added)
+
+        gamepads[slot] = gp;
+    }
+
+    /// Closes and clears out the physical controller slot holding the gamepad with the given
+    /// SDL joystick instance ID, if any. Used for SDL_EVENT_GAMEPAD_REMOVED hotplug events.
+    static void CloseGamepadForHotplug(SDL_JoystickID instanceId)
+    {
+        const int slot = FindGamepadSlotByInstanceId(instanceId);
+        if (slot == -1)
+            return;
+
+        SDL_CloseGamepad(gamepads[slot]);
+        gamepads[slot] = nullptr;
+    }
+
+    /// Drains pending SDL gamepad hotplug events (connect/disconnect) and updates the
+    /// physical controller slots accordingly. SDL reports hotplug purely as events on its
+    /// event queue, so this has to pump that queue; it is cheap and safe to call often, and
+    /// returns immediately once there is nothing left pending.
+    static void ProcessHotplugEvents()
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            switch (event.type)
+            {
+            case SDL_EVENT_GAMEPAD_ADDED:
+                OpenGamepadForHotplug(event.gdevice.which);
+                break;
+
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                CloseGamepadForHotplug(event.gdevice.which);
+                break;
+
+            default:
+                break;
+            }
+        }
+    }
+
+    /// Populates as many physical controller slots as possible with gamepads that are
+    /// already connected at startup, before any hotplug events have had a chance to fire.
+    static void ScanForGamepads()
+    {
+        int connectedCount = 0;
+        SDL_JoystickID* connectedIDs = SDL_GetGamepads(&connectedCount);
+        if (connectedIDs == nullptr)
+            return;
+
+        for (int i = 0; i < connectedCount; i++)
+            OpenGamepadForHotplug(connectedIDs[i]);
+
+        SDL_free(connectedIDs);
+    }
 
     std::wstring_view SDL3Backend::PluginName()
     {
@@ -25,18 +125,10 @@ namespace XidiSDL3Plugin
         if (!SDL_Init(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
             return false;
 
-        if (gamepadIDs = SDL_GetGamepads(&gamepadCount); gamepadIDs == nullptr)
-            return false;
-
-        gamepads.resize(gamepadCount);
-        for (auto i = 0; i < gamepadCount; i++)
-        {
-            SDL_Gamepad* gp = SDL_OpenGamepad(gamepadIDs[i]);
-            if ( gp == nullptr )
-                ; // output error when ability added;
-
-            gamepads[i] = gp;
-        }
+        // Fill in whatever physical controller slots already have a gamepad connected.
+        // Anything that connects or disconnects afterward is picked up as a hotplug event
+        // the next time ReadInputState() runs.
+        ScanForGamepads();
 
         return true;
     }
@@ -56,11 +148,15 @@ namespace XidiSDL3Plugin
 
         HIDD_ATTRIBUTES attributes = { .Size = sizeof(HIDD_ATTRIBUTES) };
         HidD_GetAttributes(hDevice, &attributes);
+        CloseHandle(hDevice);
 
         for (int i = 0; i < gamepadCount; i++)
         {
-            if (attributes.VendorID == SDL_GetGamepadVendorForID(gamepadIDs[i]) &&
-                attributes.ProductID == SDL_GetGamepadProductForID(gamepadIDs[i]))
+            if (gamepads[i] == nullptr)
+                continue;
+
+            if (attributes.VendorID == SDL_GetGamepadVendor(gamepads[i]) &&
+                attributes.ProductID == SDL_GetGamepadProduct(gamepads[i]))
                 return true;
         }
 
@@ -80,18 +176,26 @@ namespace XidiSDL3Plugin
 
     SPhysicalControllerState SDL3Backend::ReadInputState(TPhysicalControllerIndex physicalControllerIndex)
     {
+        // Pump SDL's event queue for gamepad hotplug (connect/disconnect) notifications and
+        // update our physical controller slots accordingly. Safe to call on every poll of
+        // every physical controller index; if nothing is pending it returns immediately.
+        ProcessHotplugEvents();
+
         SDL_UpdateGamepads();
         SDL_Gamepad* gp = gamepads[physicalControllerIndex];
 
         if (gp == nullptr)
-            return {.deviceStatus = Controller::EPhysicalDeviceStatus::Error};
+            return {.deviceStatus = Controller::EPhysicalDeviceStatus::NotConnected};
 
         if (!SDL_GamepadConnected(gp))
         {
             SDL_CloseGamepad(gp);
             gamepads[physicalControllerIndex] = nullptr;
 
-            return {.deviceStatus = Controller::EPhysicalDeviceStatus::NotConnected};
+            return {
+                .deviceStatus =
+                    Controller::EPhysicalDeviceStatus::NotConnected
+            };
         }
 
         SPhysicalControllerState state = {
