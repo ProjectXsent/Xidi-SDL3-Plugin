@@ -10,7 +10,13 @@ namespace XidiSDL3Plugin
 {
     using namespace Xidi;
 
-    static constexpr int kMaxPhysicalControllers = 4;
+    /* Maximum number of physical controller slots this backend exposes to Xidi. This is
+    fixed for the lifetime of the backend so that the physical controller indices handed
+    out via MaxPhysicalControllerCount() stay valid and stable even as gamepads are
+    hotplugged in and out at runtime. A slot with no gamepad currently assigned to it
+    simply reports as not connected until something is plugged into it. Raise the value if more
+    simultaneous physical controllers need to be supported. */
+    static constexpr int kMaxPhysicalControllers = 16;
 
     static std::vector<SDL_Gamepad*> gamepads(kMaxPhysicalControllers, nullptr);
     static int gamepadCount = kMaxPhysicalControllers;
@@ -192,9 +198,7 @@ namespace XidiSDL3Plugin
             SDL_CloseGamepad(gp);
             gamepads[physicalControllerIndex] = nullptr;
 
-            return {
-                .deviceStatus =
-                    Controller::EPhysicalDeviceStatus::NotConnected
+            return {.deviceStatus = Controller::EPhysicalDeviceStatus::NotConnected
             };
         }
 
