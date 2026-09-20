@@ -1,4 +1,3 @@
-#include <mutex>
 #include <vector>
 #include <SDL3/SDL.h>
 #include <Windows.h>
@@ -15,91 +14,107 @@ namespace XidiSDL3Plugin
         return L"SDL3";
     }
 
-    // Maximum number of physical controllers this backend will track at once. SDL3
-    // gamepads can be hotplugged at any time, so rather than growing/shrinking a
-    // dynamically-sized array (which would shift indices out from under callers who
-    // cache a TPhysicalControllerIndex), a fixed number of slots is reserved up front
-    // and handed out/reclaimed as controllers connect and disconnect. Adjust as needed.
-    static constexpr int kMaxPhysicalControllerCount = 16;
-
-    // Guards all access to the gamepad slot table below. The SDL hotplug event watcher
-    // can be invoked synchronously from whatever thread happens to be pumping SDL
-    // events -- in this backend, that is any thread calling SDL_UpdateGamepads() (e.g.
-    // from ReadInputState or WriteForceFeedbackState) -- so the table needs protecting
-    // against concurrent access from another thread doing the same thing.
-    static std::mutex gamepadsMutex;
-
-    // Fixed-size table of gamepad slots, sized kMaxPhysicalControllerCount. A nullptr
-    // entry means that slot is currently unoccupied. Once a controller occupies a slot,
-    // its physical controller index does not change for as long as it stays connected,
-    // and even across a disconnect/reconnect provided the slot has not since been
-    // claimed by a different controller.
-    static std::vector<SDL_Gamepad*> gamepads(kMaxPhysicalControllerCount, nullptr);
-
-    // Opens the given joystick instance as a gamepad and stores it in the first free
-    // slot, if one is available. If every slot is occupied the controller is simply not
-    // made visible to Xidi until another controller disconnects and frees one up.
-    // Caller must hold gamepadsMutex.
-    static void AddGamepadForJoystickID(SDL_JoystickID joystickID)
+    // Each slot corresponds to one physical controller index that has ever been handed out.
+    // Slots are never removed or reordered once created, so a physical controller index, once
+    // seen by the rest of Xidi, always continues to refer to the same slot -- it just reports
+    // NotConnected if the underlying device is unplugged. This mirrors how ReadInputState()
+    // already distinguishes "never going to work" (Error) from "not currently connected"
+    // (NotConnected).
+    struct SGamepadSlot
     {
-        for (int i = 0; i < kMaxPhysicalControllerCount; i++)
+        SDL_JoystickID instanceID = 0;
+        SDL_Gamepad* gamepad = nullptr;
+    };
+
+    // Xidi reads MaxPhysicalControllerCount() once, at startup, to decide how many slots exist,
+    // and only ever calls ReadInputState() for indices in that range afterward. So the slot pool
+    // must be pre-allocated to this fixed size up front -- NOT sized to however many controllers
+    // happen to be plugged in when Initialize() runs -- or a controller plugged in later will
+    // land in a slot Xidi never asks about. TODO: replace with whatever constant Xidi actually
+    // uses for its controller limit (e.g. something alongside Controller::kPhysicalCapabilities...)
+    // if one exists, instead of this hardcoded value.
+    static constexpr size_t kMaxGamepadCount = 16;
+
+    static std::vector<SGamepadSlot> gamepadSlots = {};
+
+    // Finds the slot index currently holding the given SDL joystick instance ID, or -1 if none.
+    static int FindSlotByInstanceID(SDL_JoystickID instanceID)
+    {
+        for (size_t i = 0; i < gamepadSlots.size(); i++)
         {
-            if (gamepads[i] == nullptr)
+            if (gamepadSlots[i].gamepad != nullptr && gamepadSlots[i].instanceID == instanceID)
+                return static_cast<int>(i);
+        }
+
+        return -1;
+    }
+
+    // Opens a newly-connected gamepad and places it into the first free pre-allocated slot. If
+    // every slot is already occupied (kMaxGamepadCount controllers already connected), the new
+    // controller is left unopened and ignored -- there's no slot for Xidi to read it from anyway.
+    static void HandleGamepadAdded(SDL_JoystickID instanceID)
+    {
+        if (FindSlotByInstanceID(instanceID) >= 0)
+            return;
+
+        for (auto& slot : gamepadSlots)
+        {
+            if (slot.gamepad == nullptr)
             {
-                SDL_Gamepad* gp = SDL_OpenGamepad(joystickID);
+                SDL_Gamepad* gp = SDL_OpenGamepad(instanceID);
                 if (gp == nullptr)
-                    ; // output error when ability added;
+                    return; // output error when ability added;
 
-                gamepads[i] = gp;
+                slot.instanceID = instanceID;
+                slot.gamepad = gp;
                 return;
             }
         }
     }
 
-    // Closes and clears whichever slot currently holds the given joystick instance, if
-    // any. Caller must hold gamepadsMutex.
-    static void RemoveGamepadForJoystickID(SDL_JoystickID joystickID)
+    // Closes a disconnected gamepad and frees its slot for reuse by a future device, while
+    // leaving the slot (and therefore its physical controller index) in place.
+    static void HandleGamepadRemoved(SDL_JoystickID instanceID)
     {
-        for (int i = 0; i < kMaxPhysicalControllerCount; i++)
+        int index = FindSlotByInstanceID(instanceID);
+        if (index < 0)
+            return;
+
+        SDL_CloseGamepad(gamepadSlots[index].gamepad);
+        gamepadSlots[index].gamepad = nullptr;
+        gamepadSlots[index].instanceID = 0;
+    }
+
+    // Drives SDL's hardware hotplug detection and drains any resulting add/remove events.
+    // SDL_UpdateGamepads() is what actually polls the platform for newly connected or
+    // disconnected hardware and queues the corresponding events; SDL_PollEvent() then drains
+    // them. Cheap to call often -- it's a no-op once the queue is empty.
+    //
+    // Note: this drains the *entire* SDL event queue, which is fine as long as this plugin owns
+    // its own private SDL instance solely for controller input (as Initialize() below suggests).
+    // If SDL ever ends up shared with other consumers in the host process, prefer
+    // SDL_AddEventWatch() instead, since it observes events without removing them from the queue.
+    static void ProcessHotplugEvents()
+    {
+        SDL_UpdateGamepads();
+
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
         {
-            SDL_Gamepad* gp = gamepads[i];
-            if ((gp != nullptr) && (SDL_GetGamepadID(gp) == joystickID))
+            switch (event.type)
             {
-                SDL_CloseGamepad(gp);
-                gamepads[i] = nullptr;
-                return;
+            case SDL_EVENT_GAMEPAD_ADDED:
+                HandleGamepadAdded(event.gdevice.which);
+                break;
+
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                HandleGamepadRemoved(event.gdevice.which);
+                break;
+
+            default:
+                break;
             }
         }
-    }
-
-    // SDL event watch callback used to detect gamepad hotplug events, registered with
-    // SDL_AddEventWatch during Initialize(). SDL invokes this synchronously on whatever
-    // thread pumps the responsible event -- in this backend that means any thread that
-    // calls SDL_UpdateGamepads(), since that implicitly processes device add/remove
-    // notifications even without a full SDL_PollEvent loop.
-    static bool SDLCALL HandleSDLGamepadEvent(void* userdata, SDL_Event* event)
-    {
-        switch (event->type)
-        {
-        case SDL_EVENT_GAMEPAD_ADDED:
-        {
-            std::lock_guard lock(gamepadsMutex);
-            AddGamepadForJoystickID(event->gdevice.which);
-            break;
-        }
-
-        case SDL_EVENT_GAMEPAD_REMOVED:
-        {
-            std::lock_guard lock(gamepadsMutex);
-            RemoveGamepadForJoystickID(event->gdevice.which);
-            break;
-        }
-
-        default:
-            break;
-        }
-
-        return true;
     }
 
     bool SDL3Backend::Initialize()
@@ -109,34 +124,36 @@ namespace XidiSDL3Plugin
         if (!SDL_Init(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
             return false;
 
+        // Make sure add/remove events are actually generated so ProcessHotplugEvents() can see them.
+        SDL_SetGamepadEventsEnabled(true);
+
+        // Pre-allocate every slot up front, regardless of how many controllers are actually
+        // connected right now -- see the comment on kMaxGamepadCount above for why.
+        gamepadSlots.resize(kMaxGamepadCount);
+
+        int initialGamepadCount = 0;
+        SDL_JoystickID* initialGamepadIDs = SDL_GetGamepads(&initialGamepadCount);
+        if (initialGamepadIDs == nullptr)
+            return false;
+
+        for (auto i = 0; i < initialGamepadCount && static_cast<size_t>(i) < kMaxGamepadCount; i++)
         {
-            std::lock_guard lock(gamepadsMutex);
+            SDL_Gamepad* gp = SDL_OpenGamepad(initialGamepadIDs[i]);
+            if (gp == nullptr)
+                continue; // output error when ability added;
 
-            int connectedCount = 0;
-            SDL_JoystickID* joystickIDs = SDL_GetGamepads(&connectedCount);
-            if (joystickIDs == nullptr)
-                return false;
-
-            for (int i = 0; (i < connectedCount) && (i < kMaxPhysicalControllerCount); i++)
-                AddGamepadForJoystickID(joystickIDs[i]);
-
-            SDL_free(joystickIDs);
+            gamepadSlots[i].instanceID = initialGamepadIDs[i];
+            gamepadSlots[i].gamepad = gp;
         }
 
-        // From this point on, controllers connecting or disconnecting are picked up by
-        // HandleSDLGamepadEvent, which keeps the gamepads table current.
-        if (!SDL_AddEventWatch(&HandleSDLGamepadEvent, nullptr))
-            return false;
+        SDL_free(initialGamepadIDs);
 
         return true;
     }
 
     TPhysicalControllerIndex SDL3Backend::MaxPhysicalControllerCount()
     {
-        // This is the fixed size of the slot table, not the number of controllers
-        // currently connected -- a slot for a disconnected controller still counts
-        // towards it until a different controller claims that slot.
-        return kMaxPhysicalControllerCount;
+        return static_cast<TPhysicalControllerIndex>(gamepadSlots.size());
     }
 
     bool SDL3Backend::SupportsControllerByGuidAndPath(const wchar_t* guidAndPath)
@@ -151,16 +168,13 @@ namespace XidiSDL3Plugin
         HidD_GetAttributes(hDevice, &attributes);
         CloseHandle(hDevice);
 
-        std::lock_guard lock(gamepadsMutex);
-
-        for (int i = 0; i < kMaxPhysicalControllerCount; i++)
+        for (const auto& slot : gamepadSlots)
         {
-            SDL_Gamepad* gp = gamepads[i];
-            if (gp == nullptr)
+            if (slot.instanceID == 0)
                 continue;
 
-            if (attributes.VendorID == SDL_GetGamepadVendor(gp) &&
-                attributes.ProductID == SDL_GetGamepadProduct(gp))
+            if (attributes.VendorID == SDL_GetGamepadVendorForID(slot.instanceID) &&
+                attributes.ProductID == SDL_GetGamepadProductForID(slot.instanceID))
                 return true;
         }
 
@@ -180,14 +194,13 @@ namespace XidiSDL3Plugin
 
     SPhysicalControllerState SDL3Backend::ReadInputState(TPhysicalControllerIndex physicalControllerIndex)
     {
-        SDL_UpdateGamepads();
+        ProcessHotplugEvents();
 
-        std::lock_guard lock(gamepadsMutex);
+        if (physicalControllerIndex < 0 ||
+            static_cast<size_t>(physicalControllerIndex) >= gamepadSlots.size())
+            return {.deviceStatus = Controller::EPhysicalDeviceStatus::Error};
 
-        if ((physicalControllerIndex < 0) || (physicalControllerIndex >= kMaxPhysicalControllerCount))
-             return {.deviceStatus = Controller::EPhysicalDeviceStatus::NotConnected};
-
-        SDL_Gamepad* gp = gamepads[physicalControllerIndex];
+        SDL_Gamepad* gp = gamepadSlots[physicalControllerIndex].gamepad;
 
         if (gp == nullptr)
             return {.deviceStatus = Controller::EPhysicalDeviceStatus::NotConnected};
@@ -263,24 +276,21 @@ namespace XidiSDL3Plugin
     bool SDL3Backend::WriteForceFeedbackState(TPhysicalControllerIndex physicalControllerIndex,
         SPhysicalControllerVibration vibrationState)
     {
-        {
-            std::lock_guard lock(gamepadsMutex);
+        if (physicalControllerIndex < 0 ||
+            static_cast<size_t>(physicalControllerIndex) >= gamepadSlots.size())
+            return false;
 
-            if ((physicalControllerIndex < 0) || (physicalControllerIndex >= kMaxPhysicalControllerCount))
-                return false;
+        SDL_Gamepad* gp = gamepadSlots[physicalControllerIndex].gamepad;
+        if (gp == nullptr)
+            return false;
 
-            SDL_Gamepad* gp = gamepads[physicalControllerIndex];
-            if (gp == nullptr)
-                return false;
+        SDL_PropertiesID properties = SDL_GetGamepadProperties(gp);
 
-            SDL_PropertiesID properties = SDL_GetGamepadProperties(gp);
+        if (SDL_GetBooleanProperty(properties, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false))
+            SDL_RumbleGamepad(gp, vibrationState.leftMotor, vibrationState.rightMotor, 250);
 
-            if (SDL_GetBooleanProperty(properties, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false))
-                SDL_RumbleGamepad(gp, vibrationState.leftMotor, vibrationState.rightMotor, 250);
-
-            if (SDL_GetBooleanProperty(properties, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false))
-                SDL_RumbleGamepadTriggers(gp, vibrationState.leftImpulseTrigger, vibrationState.rightImpulseTrigger, 250);
-        }
+        if (SDL_GetBooleanProperty(properties, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false))
+            SDL_RumbleGamepadTriggers(gp, vibrationState.leftImpulseTrigger, vibrationState.rightImpulseTrigger, 250);
 
         SDL_UpdateGamepads();
         return true;
