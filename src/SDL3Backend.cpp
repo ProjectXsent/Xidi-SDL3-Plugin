@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <Windows.h>
 #include <hidsdi.h>
+#include <string>
 
 #include "SDL3Backend.h"
 
@@ -117,12 +118,35 @@ namespace XidiSDL3Plugin
         }
     }
 
+    /// Looks for a "gamecontrollerdb.txt" file in the same directory as the running
+    /// executable and, if present, loads any additional/updated gamepad mappings it
+    /// contains. This lets a game or its packager ship a custom or newer SDL gamepad
+    /// mapping database without needing an update to Xidi itself. Mappings from this file
+    /// take priority over SDL's built-in database for any GUID they redefine. Safe to call
+    /// even if the file does not exist; SDL_AddGamepadMappingsFromFile() simply returns -1
+    /// in that case and there is nothing further to do here (log when ability added). Note
+    /// that SDL3 owns the memory returned by SDL_GetBasePath(), so it must not be freed here.
+    static void LoadGameControllerDBIfPresent()
+    {
+        const char* basePath = SDL_GetBasePath();
+        if (basePath == nullptr)
+            return;
+
+        const std::string dbPath = std::string(basePath) + "gamecontrollerdb.txt";
+        SDL_AddGamepadMappingsFromFile(dbPath.c_str());
+    }
+
     bool SDL3Backend::Initialize()
     {
         if (!SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1"))
             return false;
         if (!SDL_Init(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
             return false;
+
+        // Load any custom/updated gamepad mappings shipped alongside the game before
+        // opening any gamepads, so the mappings are already in effect for devices found
+        // during the initial scan.
+        LoadGameControllerDBIfPresent();
 
         // Make sure add/remove events are actually generated so ProcessHotplugEvents() can see them.
         SDL_SetGamepadEventsEnabled(true);
